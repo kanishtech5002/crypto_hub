@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoHub - Real-Time Cryptocurrency Price Tracker & Market Analytics</title>
+    <!-- Google Fonts: Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Bootstrap 5 CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="glass-bg"></div>
+
+    <div class="container py-5">
+        <!-- Toast Notification Area -->
+        <div class="position-fixed top-0 end-0 p-3" style="z-index: 1050">
+            <!-- Flask Flash Toasts -->
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="toast show align-items-center text-white border-0 bg-{{ 'success' if category == 'success' else 'danger' if category == 'error' else 'warning' }} mb-2" role="alert" aria-live="assertive" aria-atomic="true">
+                            <div class="d-flex">
+                                <div class="toast-body">
+                                    <i class="bi {{ 'bi-check-circle-fill' if category == 'success' else 'bi-exclamation-triangle-fill' }} me-2"></i>
+                                    {{ message }}
+                                </div>
+                                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            
+            <!-- AJAX Dynamic Toast -->
+            <div id="dynamic-toast" class="toast align-items-center text-white border-0 bg-primary mb-2" role="alert" aria-live="assertive" aria-atomic="true">
+                <div class="d-flex">
+                    <div class="toast-body" id="dynamic-toast-body">
+                        Message placeholder
+                    </div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Header Dashboard -->
+        <header class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-5 p-4 rounded-4 dashboard-card">
+            <div>
+                <h1 class="display-5 fw-bold text-gradient mb-1">
+                    <i class="bi bi-cpu-fill me-2 pulse-accent"></i>CryptoHub
+                </h1>
+                <p class="text-secondary mb-0">Real-Time Cryptocurrency Price Tracker & Market Analytics</p>
+            </div>
+            <div class="d-flex gap-3 mt-3 mt-md-0">
+                <button type="button" class="btn btn-neon-blue px-4 py-2 fw-semibold" id="scrapeBtn" onclick="triggerScrape()">
+                    <span id="scrapeText"><i class="bi bi-play-fill me-2"></i>Scrape Data</span>
+                    <span id="scrapeSpinner" class="spinner-border spinner-border-sm me-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+                <a href="{{ url_for('download') }}" class="btn btn-neon-green px-4 py-2 fw-semibold" id="downloadBtn">
+                    <i class="bi bi-download me-2"></i>Download CSV
+                </a>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <div class="row g-4">
+            
+            <!-- Filters Card -->
+            <div class="col-lg-3 col-md-4">
+                <div class="card p-4 rounded-4 dashboard-card h-100">
+                    <h3 class="h5 fw-bold text-light mb-4"><i class="bi bi-sliders2 me-2 text-cyan"></i>Analytics Filter</h3>
+                    
+                    <form id="filterForm">
+                        <!-- Minimum Price Input -->
+                        <div class="mb-4">
+                            <label for="min_price" class="form-label text-secondary fs-7">Minimum Price (USD)</label>
+                            <div class="input-group">
+                                <span class="input-group-text bg-dark-input text-secondary border-0">$</span>
+                                <input type="number" step="any" class="form-control bg-dark-input border-0 text-light px-3" 
+                                       id="min_price" name="min_price" placeholder="e.g. 100">
+                            </div>
+                        </div>
+
+                        <!-- Sort Toggle -->
+                        <div class="mb-4">
+                            <div class="form-check form-switch custom-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="sort_gainers" name="sort_gainers" value="true">
+                                <label class="form-check-label text-light fs-7" for="sort_gainers">Sort by 24h Gainers</label>
+                            </div>
+                        </div>
+
+                        <!-- Buttons -->
+                        <div class="d-grid gap-2">
+                            <button type="submit" class="btn btn-neon-blue py-2 fw-semibold">Apply Filters</button>
+                            <button type="button" class="btn btn-outline-secondary py-2 fw-semibold border-0-hover" onclick="resetFilters()">
+                                <i class="bi bi-x-circle me-1"></i>Reset
+                            </button>
+                        </div>
+                    </form>
+                    
+                    <!-- Network Status -->
+                    <div class="mt-auto pt-4 border-top border-secondary-dark">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="status-pulse-dot" id="status-dot" style="background-color: var(--text-muted); box-shadow: none; animation: none;"></span>
+                            <span class="text-secondary fs-7" id="status-text">Status: Idle</span>
+                        </div>
+                        <div class="text-secondary fs-7 mt-1">
+                            <i class="bi bi-clock me-1 text-cyan"></i>Updated: <span class="text-light fw-medium" id="update-timestamp">{{ last_updated }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table Card -->
+            <div class="col-lg-9 col-md-8">
+                <div class="card p-4 rounded-4 dashboard-card h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="h4 fw-bold text-light mb-0"><i class="bi bi-bar-chart-fill me-2 text-cyan"></i>MarketInsights</h2>
+                        <span class="badge bg-secondary-dark text-cyan px-3 py-2 rounded-3 fs-7">Top 10 Cryptocurrencies</span>
+                    </div>
+
+                    <!-- Last Updated Card -->
+                    <div class="bg-dark-input border border-secondary-dark rounded-3 p-3 mb-4">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div>
+                                <p class="text-secondary fs-7 mb-1"><i class="bi bi-clock-history me-2 text-cyan"></i>Last Updated</p>
+                                <p class="text-light fw-semibold fs-6 mb-0" id="last-updated-timestamp">N/A</p>
+                            </div>
+                            <div class="text-end">
+                                <span class="badge bg-success bg-opacity-25 text-success px-3 py-2 rounded-3 fs-7" id="data-sync-status">Ready</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- No Data Placeholder (Start State / Empty Results) -->
+                    <div id="no-data-placeholder" class="text-center py-5 text-secondary">
+                        <i class="bi bi-emoji-frown display-4 mb-3 text-cyan"></i>
+                        <p class="fs-5 mb-0" id="placeholder-message">No Data Available. Click Scrape Data to Fetch Cryptocurrency Data.</p>
+                        <p class="fs-7 text-muted mt-1" id="placeholder-submessage">You must initiate a scrapers' session to populate the dashboard.</p>
+                    </div>
+
+                    <!-- Data Table -->
+                    <div id="table-container" class="table-responsive d-none">
+                        <table class="table table-custom align-middle">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="text-secondary fw-semibold">Rank</th>
+                                    <th scope="col" class="text-secondary fw-semibold">Name</th>
+                                    <th scope="col" class="text-secondary fw-semibold text-end">Price</th>
+                                    <th scope="col" class="text-secondary fw-semibold text-end">24h Change</th>
+                                    <th scope="col" class="text-secondary fw-semibold text-end">Market Cap</th>
+                                </tr>
+                            </thead>
+                            <tbody id="crypto-table-body">
+                                <!-- Populated dynamically by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Footer -->
+        <footer class="text-center mt-5 text-secondary fs-7">
+            <p class="mb-0">&copy; 2026 CryptoHub dashboard. Built with Flask, Selenium, Pandas & Bootstrap 5.</p>
+            <p class="text-secondary-dark">Data fetched dynamically from CoinMarketCap under headless automation.</p>
+        </footer>
+    </div>
+
+    <!-- AJAX & Client-side Filtering Logic -->
+    <script>
+        // Memory store for scraped coins
+        let allCoins = [];
+
+        // Dynamic notification toast
+        function showToast(message, type = 'primary') {
+            const toastEl = document.getElementById('dynamic-toast');
+            const toastBody = document.getElementById('dynamic-toast-body');
+            
+            // Set message
+            toastBody.innerHTML = message;
+            
+            // Set class depending on type
+            toastEl.className = `toast show align-items-center text-white border-0 bg-${type} mb-2`;
+            
+            // Auto hide after 4 seconds
+            setTimeout(() => {
+                toastEl.classList.remove('show');
+            }, 4000);
+        }
+
+        // Trigger Selenium scraping via Fetch API
+        async function triggerScrape() {
+            const scrapeBtn = document.getElementById('scrapeBtn');
+            const scrapeText = document.getElementById('scrapeText');
+            const scrapeSpinner = document.getElementById('scrapeSpinner');
+            
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            // Disable button and show spinner
+            scrapeBtn.classList.add('disabled');
+            scrapeBtn.disabled = true;
+            scrapeText.classList.add('d-none');
+            scrapeSpinner.classList.remove('d-none');
+            
+            // Update network status to loading
+            statusDot.style.backgroundColor = 'var(--neon-blue)';
+            statusDot.style.boxShadow = '0 0 8px var(--neon-blue-glow)';
+            statusDot.style.animation = 'pulse 1.2s infinite';
+            statusText.innerText = 'Status: Scraping live data...';
+            
+            showToast('<i class="spinner-border spinner-border-sm me-2"></i>Scraping CoinMarketCap. Please wait...', 'info');
+
+            try {
+                const response = await fetch('/scrape');
+                const result = await response.json();
+
+                if (result.success) {
+                    allCoins = result.coins;
+                    
+                    // Update timestamp in sidebar
+                    document.getElementById('update-timestamp').innerText = result.last_updated;
+                    
+                    // Update Last Updated card in Market Insights
+                    document.getElementById('last-updated-timestamp').innerText = result.last_updated_formatted;
+                    
+                    // Update network status to online
+                    statusDot.style.backgroundColor = 'var(--neon-green)';
+                    statusDot.style.boxShadow = '0 0 8px var(--neon-green-glow)';
+                    statusDot.style.animation = 'pulse 1.8s infinite';
+                    statusText.innerText = 'Status: Online (Data synced)';
+
+                    // Render table with filters
+                    applyFilters();
+
+                    showToast('<i class="bi bi-check-circle-fill me-2"></i>Crypto data synced successfully!', 'success');
+                } else {
+                    throw new Error(result.error || 'Unknown error occurred during scraping.');
+                }
+            } catch (err) {
+                console.error(err);
+                
+                // Update network status to error
+                statusDot.style.backgroundColor = 'var(--neon-red)';
+                statusDot.style.boxShadow = '0 0 8px var(--neon-red-glow)';
+                statusDot.style.animation = 'none';
+                statusText.innerText = 'Status: Scrape error';
+
+                showToast(`<i class="bi bi-exclamation-triangle-fill me-2"></i>Scraping failed: ${err.message}`, 'danger');
+            } finally {
+                // Re-enable button and hide spinner
+                scrapeBtn.classList.remove('disabled');
+                scrapeBtn.disabled = false;
+                scrapeText.classList.remove('d-none');
+                scrapeSpinner.classList.add('d-none');
+            }
+        }
+
+        // Render table body
+        function renderTable(coins) {
+            const tableBody = document.getElementById('crypto-table-body');
+            const placeholder = document.getElementById('no-data-placeholder');
+            const placeholderMsg = document.getElementById('placeholder-message');
+            const placeholderSubMsg = document.getElementById('placeholder-submessage');
+            const tableContainer = document.getElementById('table-container');
+
+            tableBody.innerHTML = '';
+
+            // Handle empty results
+            if (coins.length === 0) {
+                tableContainer.classList.add('d-none');
+                placeholder.classList.remove('d-none');
+                
+                if (allCoins.length === 0) {
+                    placeholderMsg.innerText = 'No Data Available. Click Scrape Data to Fetch Cryptocurrency Data.';
+                    placeholderSubMsg.innerText = 'You must initiate a scrapers\' session to populate the dashboard.';
+                } else {
+                    placeholderMsg.innerText = 'No cryptocurrencies match your filters.';
+                    placeholderSubMsg.innerText = 'Adjust your Minimum Price limit or reset the filters.';
+                }
+                return;
+            }
+
+            // Hide placeholder and show table
+            placeholder.classList.add('d-none');
+            tableContainer.classList.remove('d-none');
+
+            // Render rows
+            coins.forEach(coin => {
+                const tr = document.createElement('tr');
+                
+                // Format change
+                let changeHtml = '';
+                if (coin.Change < 0) {
+                    changeHtml = `<span class="text-danger fw-semibold"><i class="bi bi-caret-down-fill me-1"></i>${Math.abs(coin.Change).toFixed(2)}%</span>`;
+                } else if (coin.Change > 0) {
+                    changeHtml = `<span class="text-success fw-semibold"><i class="bi bi-caret-up-fill me-1"></i>${coin.Change.toFixed(2)}%</span>`;
+                } else {
+                    changeHtml = `<span class="text-secondary fw-semibold">0.00%</span>`;
+                }
+
+                tr.innerHTML = `
+                    <td class="fw-bold text-light" style="width: 8%;">#${coin.Rank}</td>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <div class="crypto-icon-placeholder me-3">
+                                ${coin.Symbol ? coin.Symbol[0] : 'C'}
+                            </div>
+                            <div>
+                                <div class="fw-semibold text-light fs-6">${coin.Name}</div>
+                                <div class="badge bg-secondary-dark text-secondary font-monospace fs-8">${coin.Symbol}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="text-end fw-semibold text-light font-monospace fs-6">
+                        ${coin.FormattedPrice}
+                    </td>
+                    <td class="text-end font-monospace">
+                        ${changeHtml}
+                    </td>
+                    <td class="text-end text-light-muted font-monospace">
+                        ${coin.FormattedMarketCap}
+                    </td>
+                `;
+                tableBody.appendChild(tr);
+            });
+        }
+
+        // Apply filters (Minimum Price, Sort Gainers) on the memory state
+        function applyFilters() {
+            const minPriceInput = document.getElementById('min_price').value.trim();
+            const sortGainers = document.getElementById('sort_gainers').checked;
+
+            let filtered = [...allCoins];
+
+            // Filter minimum price
+            if (minPriceInput !== '') {
+                const minPrice = parseFloat(minPriceInput);
+                if (!isNaN(minPrice)) {
+                    filtered = filtered.filter(c => c.Price >= minPrice);
+                }
+            }
+
+            // Sort by Rank ascending (default) or 24h Change descending
+            if (sortGainers) {
+                filtered.sort((a, b) => b.Change - a.Change);
+            } else {
+                filtered.sort((a, b) => a.Rank - b.Rank);
+            }
+
+            renderTable(filtered);
+        }
+
+        // Reset Filter inputs
+        function resetFilters() {
+            document.getElementById('min_price').value = '';
+            document.getElementById('sort_gainers').checked = false;
+            applyFilters();
+        }
+
+        // Bind form submit for filters to prevent standard page reload
+        document.getElementById('filterForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            applyFilters();
+        });
+
+        // Setup toast autohide for Flask flashes
+        setTimeout(() => {
+            const toasts = document.querySelectorAll('.toast');
+            toasts.forEach(toast => {
+                if (toast.id !== 'dynamic-toast') {
+                    toast.classList.remove('show');
+                }
+            });
+        }, 4000);
+    </script>
+    
+    <!-- Bootstrap JS Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
