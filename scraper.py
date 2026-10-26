@@ -1,160 +1,262 @@
 import os
-import time
+import tempfile
 from datetime import datetime
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
 
-CSV_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crypto_history.csv")
-LATEST_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_crypto.csv")
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-# Legacy path for backward compatibility
+def get_data_dir():
+    """
+    Returns a writable directory for saving CSV exports.
+    On Vercel and serverless platforms where root is read-only, uses the temporary directory.
+    """
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return tempfile.gettempdir()
+    
+    local_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.access(local_dir, os.W_OK):
+        return local_dir
+        
+    return tempfile.gettempdir()
+
+def get_latest_csv_path():
+    """Returns the absolute path to the latest CSV file."""
+    return os.path.join(get_data_dir(), "latest_crypto.csv")
+
+def get_history_csv_path():
+    """Returns the absolute path to the historical CSV file."""
+    return os.path.join(get_data_dir(), "crypto_history.csv")
+
+# Export paths for compatibility
+LATEST_CSV_PATH = get_latest_csv_path()
+CSV_HISTORY_PATH = get_history_csv_path()
 CSV_PATH = CSV_HISTORY_PATH
 
-# Global Headless Configuration (False by default to allow visible browser windows)
-HEADLESS_MODE = False
+
+def _save_output(df):
+    """
+    Saves dataframe to both latest and historical CSV files.
+    Safely ignores write errors in strictly read-only serverless environments.
+    """
+    try:
+        data_dir = get_data_dir()
+        latest_path = os.path.join(data_dir, "latest_crypto.csv")
+        history_path = os.path.join(data_dir, "crypto_history.csv")
+
+        if not os.path.exists(history_path):
+            df.to_csv(history_path, index=False)
+            print(f"Created new historical CSV: {history_path}")
+        else:
+            df.to_csv(history_path, mode='a', header=False, index=False)
+            print(f"Appended records to historical CSV: {history_path}")
+
+        df.to_csv(latest_path, index=False)
+        print(f"Saved latest Top 10 records to: {latest_path}")
+    except Exception as e:
+        print(f"Warning: Unable to save CSV to disk: {e}")
+
+
+def _fetch_from_coinmarketcap(api_key):
+    """
+    Fetches the top 10 cryptocurrencies from CoinMarketCap Pro API.
+    Endpoint: https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+    headers = {
+        "X-CMC_PRO_API_KEY": api_key.strip(),
+        "Accept": "application/json",
+        "User-Agent": "CryptoHub/1.0"
+    }
+    params = {
+        "start": 1,
+        "limit": 10,
+        "convert": "USD"
+    }
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Fetching top 10 coins from CoinMarketCap API...")
+    response = requests.get(url, headers=headers, params=params, timeout=12)
+    
+    if response.status_code != 200:
+        try:
+            err_data = response.json()
+            err_msg = err_data.get("status", {}).get("error_message") or response.text
+        except Exception:
+            err_msg = response.text
+        raise ValueError(f"CoinMarketCap API HTTP {response.status_code}: {err_msg}")
+
+    payload = response.json()
+    coins = payload.get("data", [])
+    if not coins or not isinstance(coins, list):
+        raise ValueError("Invalid or empty data received from CoinMarketCap API.")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for idx, coin in enumerate(coins[:10], start=1):
+        quote_usd = coin.get("quote", {}).get("USD", {})
+        price = float(quote_usd.get("price") or 0.0)
+        change_24h = float(quote_usd.get("percent_change_24h") or 0.0)
+        market_cap = float(quote_usd.get("market_cap") or 0.0)
+
+        rows.append({
+            "Timestamp": timestamp,
+            "Rank": int(coin.get("cmc_rank", idx)),
+            "Name": str(coin.get("name", "")),
+            "Symbol": str(coin.get("symbol", "")).upper(),
+            "Price": price,
+            "24h_Change": change_24h,
+            "Market_Cap": market_cap
+        })
+
+    df = pd.DataFrame(rows)
+    _save_output(df)
+    return df
+
+
+def _fetch_from_coinpaprika():
+    """
+    Reliable zero-authentication fallback using CoinPaprika API.
+    Provides live price, 24h change, and market cap for top cryptocurrencies.
+    """
+    url = "https://api.coinpaprika.com/v1/tickers"
+    headers = {
+        "User-Agent": "CryptoHub/1.0",
+        "Accept": "application/json"
+    }
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Fetching top 10 coins from CoinPaprika API...")
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+
+    tickers = response.json()
+    if not isinstance(tickers, list) or len(tickers) == 0:
+        raise ValueError("Invalid response format from CoinPaprika API.")
+
+    ranked = sorted([t for t in tickers if t.get("rank")], key=lambda x: x["rank"])
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+
+    for idx, coin in enumerate(ranked[:10], start=1):
+        usd_quote = coin.get("quotes", {}).get("USD", {})
+        price = float(usd_quote.get("price") or 0.0)
+        change_24h = float(usd_quote.get("percent_change_24h") or 0.0)
+        market_cap = float(usd_quote.get("market_cap") or 0.0)
+
+        rows.append({
+            "Timestamp": timestamp,
+            "Rank": int(coin.get("rank", idx)),
+            "Name": str(coin.get("name", "")),
+            "Symbol": str(coin.get("symbol", "")).upper(),
+            "Price": price,
+            "24h_Change": change_24h,
+            "Market_Cap": market_cap
+        })
+
+    df = pd.DataFrame(rows)
+    _save_output(df)
+    return df
+
+
+def _fetch_from_coingecko():
+    """
+    Public API fallback using CoinGecko markets endpoint.
+    """
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 10,
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "24h"
+    }
+    headers = {
+        "User-Agent": "CryptoHub/1.0",
+        "Accept": "application/json"
+    }
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Fetching top 10 coins from CoinGecko API...")
+    response = requests.get(url, params=params, headers=headers, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+
+    if not isinstance(payload, list) or len(payload) == 0:
+        raise ValueError("Invalid response format from CoinGecko API.")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for idx, coin in enumerate(payload[:10], start=1):
+        rows.append({
+            "Timestamp": timestamp,
+            "Rank": idx,
+            "Name": str(coin.get("name", "")),
+            "Symbol": str(coin.get("symbol", "")).upper(),
+            "Price": float(coin.get("current_price") or 0.0),
+            "24h_Change": float(coin.get("price_change_percentage_24h") or 0.0),
+            "Market_Cap": float(coin.get("market_cap") or 0.0)
+        })
+
+    df = pd.DataFrame(rows)
+    _save_output(df)
+    return df
+
 
 def scrape_top_10():
     """
-    Scrapes the top 10 cryptocurrencies from CoinMarketCap using Selenium.
-    Cleans and processes the data using Pandas, appends it to crypto_prices.csv
-    with a timestamp, and returns the current top 10 DataFrame.
+    Fetches real-time market data for the top 10 cryptocurrencies.
+    
+    Order of operations:
+    1. If COINMARKETCAP_API_KEY (or CMC_API_KEY) is configured in environment variables,
+       fetch directly from CoinMarketCap Pro API.
+    2. If no CoinMarketCap key is provided or if CMC returns an error/rate limit,
+       fall back to CoinPaprika API for reliable live market data.
+    3. If CoinPaprika fails, fall back to CoinGecko API.
     """
-    options = webdriver.ChromeOptions()
-    if HEADLESS_MODE:
-        options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    
-    # Configure user-specific Chrome binary if available (standard on the test environment)
-    user_chrome = os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe')
-    if os.path.exists(user_chrome):
-        options.binary_location = user_chrome
+    cmc_key = os.environ.get("COINMARKETCAP_API_KEY") or os.environ.get("CMC_API_KEY")
+    errors = []
 
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Selenium WebDriver...")
-    driver = webdriver.Chrome(options=options)
-    
+    if cmc_key and cmc_key.strip():
+        try:
+            return _fetch_from_coinmarketcap(cmc_key)
+        except Exception as e:
+            msg = f"CoinMarketCap API error: {e}"
+            print(msg)
+            errors.append(msg)
+    else:
+        print("Note: COINMARKETCAP_API_KEY not configured. Using live cryptocurrency data API fallback.")
+
+    # Try CoinPaprika
     try:
-        url = "https://coinmarketcap.com/"
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Navigating to {url}...")
-        driver.get(url)
-        
-        # Explicit wait for the main cryptocurrency table to load
-        wait = WebDriverWait(driver, 25)
-        table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.cmc-table")))
-        
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Table loaded. Processing rows...")
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.cmc-table tbody tr")
-        
-        scraped_data = []
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        for idx, row in enumerate(rows):
-            if len(scraped_data) >= 10:
-                break
-                
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) < 8:
-                continue
-                
-            rank_text = cells[1].text.strip()
-            if not rank_text.isdigit():
-                # Skip non-cryptocurrency rows (e.g. index/banner headers)
-                continue
-                
-            rank = int(rank_text)
-            
-            # Extract name and symbol
-            # Typically text structure: "Bitcoin\nBTC\nBuy" or "Ethereum\nETH"
-            name_cell_text = cells[2].text.strip()
-            name_parts = name_cell_text.split('\n')
-            if len(name_parts) >= 2:
-                name = name_parts[0].strip()
-                symbol = name_parts[1].strip()
-            else:
-                name = name_cell_text
-                symbol = ""
-                
-            # Extract price and convert to float
-            price_text = cells[3].text.strip()
-            price_clean = price_text.replace('$', '').replace(',', '').strip()
-            try:
-                price = float(price_clean)
-            except ValueError:
-                price = 0.0
-                
-            # Extract 24h Change and handle positive/negative signs
-            change_cell = cells[5]
-            change_text = change_cell.text.strip()
-            change_clean = change_text.replace('%', '').replace(',', '').strip()
-            try:
-                change_val = float(change_clean)
-            except ValueError:
-                change_val = 0.0
-                
-            # Determine direction (positive/negative) by checking innerHTML for caret-down icon
-            inner_html = change_cell.get_attribute("innerHTML")
-            if "icon-Caret-down" in inner_html or "caret-down" in inner_html:
-                change_val = -abs(change_val)
-            elif "icon-Caret-up" in inner_html or "caret-up" in inner_html:
-                change_val = abs(change_val)
-                
-            # Extract Market Cap and convert to int/float
-            mcap_text = cells[7].text.strip()
-            mcap_clean = mcap_text.replace('$', '').replace(',', '').strip()
-            try:
-                market_cap = float(mcap_clean)
-            except ValueError:
-                market_cap = 0.0
-                
-            scraped_data.append({
-                "Timestamp": timestamp,
-                "Rank": rank,
-                "Name": name,
-                "Symbol": symbol,
-                "Price": price,
-                "24h_Change": change_val,
-                "Market_Cap": market_cap
-            })
-            
-            print(f"  Scraped: Rank {rank} - {name} ({symbol}) | Price: {price} | 24h Change: {change_val}% | Market Cap: {market_cap}")
-            
-        if not scraped_data:
-            raise Exception("No cryptocurrency data could be scraped from the page.")
-            
-        df = pd.DataFrame(scraped_data)
-        
-        # Save to CSV (Historical Logging in crypto_history.csv)
-        # If the file does not exist, write it with headers. If it does exist, append without headers.
-        if not os.path.exists(CSV_HISTORY_PATH):
-            df.to_csv(CSV_HISTORY_PATH, index=False)
-            print(f"Created new historical CSV file: {CSV_HISTORY_PATH}")
-        else:
-            df.to_csv(CSV_HISTORY_PATH, mode='a', header=False, index=False)
-            print(f"Appended scraped data to historical CSV: {CSV_HISTORY_PATH}")
-        
-        # Save only the latest Top 10 to latest_crypto.csv (overwrite mode)
-        df.to_csv(LATEST_CSV_PATH, index=False)
-        print(f"Saved latest Top 10 records to: {LATEST_CSV_PATH}")
-            
-        return df
-        
+        return _fetch_from_coinpaprika()
     except Exception as e:
-        print(f"Error during scraping: {str(e)}")
-        raise e
-    finally:
-        driver.quit()
+        msg = f"CoinPaprika fallback error: {e}"
+        print(msg)
+        errors.append(msg)
+
+    # Try CoinGecko
+    try:
+        return _fetch_from_coingecko()
+    except Exception as e:
+        msg = f"CoinGecko fallback error: {e}"
+        print(msg)
+        errors.append(msg)
+
+    # If all sources failed, raise an informative exception
+    raise RuntimeError(
+        "Failed to retrieve live cryptocurrency data from all providers. "
+        + " | ".join(errors)
+    )
+
 
 if __name__ == "__main__":
-    # Test execution
-    print("Running scraper test...")
+    print("Testing cryptocurrency data retrieval...")
     try:
         df_result = scrape_top_10()
-        print("\nScraping successful! Results:")
-        print(df_result)
-    except Exception as ex:
-        print(f"Failed: {ex}")
+        print("\nSuccess! Retrieved top 10 cryptocurrencies:")
+        print(df_result[["Rank", "Name", "Symbol", "Price", "24h_Change", "Market_Cap"]])
+    except Exception as err:
+        print(f"Failed: {err}")

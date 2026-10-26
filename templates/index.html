@@ -166,9 +166,9 @@
         </div>
 
         <!-- Footer -->
-        <footer class="text-center mt-5 text-secondary fs-7">
-            <p class="mb-0">&copy; 2026 CryptoHub dashboard. Built with Flask, Selenium, Pandas & Bootstrap 5.</p>
-            <p class="text-secondary-dark">Data fetched dynamically from CoinMarketCap under headless automation.</p>
+        <footer class="text-center mt-5 pt-2 pb-4">
+            <p class="footer-text text-secondary mb-1">CryptoHub | Real-Time Crypto Market Data.</p>
+            <p class="footer-author text-muted mb-0">@kanish</p>
         </footer>
     </div>
 
@@ -215,7 +215,7 @@
             statusDot.style.animation = 'pulse 1.2s infinite';
             statusText.innerText = 'Status: Scraping live data...';
             
-            showToast('<i class="spinner-border spinner-border-sm me-2"></i>Scraping CoinMarketCap. Please wait...', 'info');
+            showToast('<i class="spinner-border spinner-border-sm me-2"></i>Fetching live cryptocurrency data. Please wait...', 'info');
 
             try {
                 const response = await fetch('/scrape');
@@ -368,6 +368,38 @@
         document.getElementById('filterForm').addEventListener('submit', function(e) {
             e.preventDefault();
             applyFilters();
+        });
+
+        // Download CSV from in-memory dataset if already fetched
+        document.getElementById('downloadBtn').addEventListener('click', function(e) {
+            if (allCoins && allCoins.length > 0) {
+                e.preventDefault();
+                const headers = ["Timestamp", "Rank", "Name", "Symbol", "Price", "24h_Change", "Market_Cap"];
+                const csvRows = [headers.join(",")];
+                
+                allCoins.forEach(coin => {
+                    const row = [
+                        `"${coin.Timestamp || ''}"`,
+                        coin.Rank,
+                        `"${coin.Name}"`,
+                        `"${coin.Symbol}"`,
+                        coin.Price,
+                        coin.Change,
+                        coin.MarketCap
+                    ];
+                    csvRows.push(row.join(","));
+                });
+
+                const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "crypto_prices.csv";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
         });
 
         // Setup toast autohide for Flask flashes

@@ -2,10 +2,22 @@ import os
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify
 from datetime import datetime
-from scraper import scrape_top_10, LATEST_CSV_PATH
+from scraper import (
+    scrape_top_10,
+    get_latest_csv_path,
+    get_history_csv_path,
+    LATEST_CSV_PATH,
+    CSV_HISTORY_PATH
+)
 
-app = Flask(__name__)
-app.secret_key = "crypto_tracker_secret_key_college_project"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static")
+)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crypto_tracker_secret_key_college_project")
 
 def format_price(val):
     """Formats price with commas and dynamic decimal places depending on magnitude."""
@@ -16,7 +28,7 @@ def format_price(val):
         elif val_float >= 1:
             return f"${val_float:,.2f}"
         elif val_float > 0:
-            # For cheap coins like Dogecoin, show more decimals
+            # For lower-priced coins, show more decimals
             return f"${val_float:,.4f}"
         return "$0.00"
     except (ValueError, TypeError):
@@ -43,7 +55,7 @@ def format_timestamp_display(timestamp_str):
 
 @app.route("/")
 def index():
-    # Return empty list and startup message on main load
+    # Return empty list and startup state on main load
     return render_template(
         "index.html",
         coins=[],
@@ -55,7 +67,7 @@ def index():
 @app.route("/scrape")
 def scrape():
     try:
-        # Perform live scraping
+        # Perform live cryptocurrency data retrieval
         df = scrape_top_10()
         
         # Format values for AJAX JSON payload
@@ -71,7 +83,7 @@ def scrape():
                 "Price": float(row["Price"]),
                 "FormattedPrice": format_price(row["Price"]),
                 "Change": float(row["24h_Change"]),
-                "MarketCap": int(row["Market_Cap"]),
+                "MarketCap": int(float(row["Market_Cap"])),
                 "FormattedMarketCap": format_market_cap(row["Market_Cap"]),
                 "Timestamp": latest_timestamp
             })
@@ -92,14 +104,25 @@ def scrape():
 
 @app.route("/download")
 def download():
-    # Check if file exists; if not, return error since scraping must be manual
-    if not os.path.exists(LATEST_CSV_PATH) or os.path.getsize(LATEST_CSV_PATH) == 0:
-        flash("No data available to download. Please click 'Scrape Data' first.", "warning")
-        return redirect(url_for("index"))
-            
+    latest_path = get_latest_csv_path()
+
+    # If the file does not exist or is empty in the current runtime, attempt to generate it
+    if not os.path.exists(latest_path) or os.path.getsize(latest_path) == 0:
+        try:
+            scrape_top_10()
+            latest_path = get_latest_csv_path()
+        except Exception:
+            # Fall back to root latest_crypto.csv if available
+            root_fallback = os.path.join(BASE_DIR, "latest_crypto.csv")
+            if os.path.exists(root_fallback) and os.path.getsize(root_fallback) > 0:
+                latest_path = root_fallback
+            else:
+                flash("No data available to download. Please click 'Scrape Data' first.", "warning")
+                return redirect(url_for("index"))
+
     try:
         return send_file(
-            LATEST_CSV_PATH,
+            latest_path,
             mimetype="text/csv",
             as_attachment=True,
             download_name="crypto_prices.csv"
