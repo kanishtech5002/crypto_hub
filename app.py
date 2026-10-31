@@ -1,4 +1,5 @@
 import os
+import io
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify
 from datetime import datetime
@@ -12,10 +13,18 @@ from scraper import (
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+template_dir = os.path.join(BASE_DIR, "templates")
+if not os.path.isdir(template_dir):
+    template_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "templates"))
+
+static_dir = os.path.join(BASE_DIR, "static")
+if not os.path.isdir(static_dir):
+    static_dir = os.path.abspath(os.path.join(BASE_DIR, "..", "static"))
+
 app = Flask(
     __name__,
-    template_folder=os.path.join(BASE_DIR, "templates"),
-    static_folder=os.path.join(BASE_DIR, "static")
+    template_folder=template_dir,
+    static_folder=static_dir
 )
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crypto_tracker_secret_key_college_project")
 
@@ -106,30 +115,47 @@ def scrape():
 def download():
     latest_path = get_latest_csv_path()
 
-    # If the file does not exist or is empty in the current runtime, attempt to generate it
-    if not os.path.exists(latest_path) or os.path.getsize(latest_path) == 0:
+    # 1. If cached CSV file exists on disk, serve it
+    if os.path.exists(latest_path) and os.path.getsize(latest_path) > 0:
         try:
-            scrape_top_10()
-            latest_path = get_latest_csv_path()
-        except Exception:
-            # Fall back to root latest_crypto.csv if available
-            root_fallback = os.path.join(BASE_DIR, "latest_crypto.csv")
-            if os.path.exists(root_fallback) and os.path.getsize(root_fallback) > 0:
-                latest_path = root_fallback
-            else:
-                flash("No data available to download. Please click 'Scrape Data' first.", "warning")
-                return redirect(url_for("index"))
+            return send_file(
+                latest_path,
+                mimetype="text/csv",
+                as_attachment=True,
+                download_name="crypto_prices.csv"
+            )
+        except Exception as e:
+            print(f"Error serving cached CSV file: {e}")
 
+    # 2. In serverless instances (cold start), attempt live scrape and stream in-memory
     try:
+        df = scrape_top_10()
+        csv_buffer = io.BytesIO(df.to_csv(index=False).encode("utf-8"))
         return send_file(
-            latest_path,
+            csv_buffer,
             mimetype="text/csv",
             as_attachment=True,
             download_name="crypto_prices.csv"
         )
-    except Exception as e:
-        flash(f"Failed to download CSV: {str(e)}", "error")
-        return redirect(url_for("index"))
+    except Exception as scrape_err:
+        print(f"Live scrape in download route failed: {scrape_err}")
+
+    # 3. Fall back to bundled latest_crypto.csv from repository root
+    root_fallback = os.path.join(BASE_DIR, "latest_crypto.csv")
+    if os.path.exists(root_fallback) and os.path.getsize(root_fallback) > 0:
+        try:
+            return send_file(
+                root_fallback,
+                mimetype="text/csv",
+                as_attachment=True,
+                download_name="crypto_prices.csv"
+            )
+        except Exception as e:
+            flash(f"Failed to download CSV: {str(e)}", "error")
+            return redirect(url_for("index"))
+
+    flash("No cryptocurrency data available to download. Please click 'Scrape Data' first.", "warning")
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)
